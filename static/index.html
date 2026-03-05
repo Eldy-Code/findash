@@ -105,6 +105,18 @@
     </div>
   </div>
 
+  <!-- Portfolio Trend -->
+  <div class="card mb-5" id="portfolio-trend-card">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-slate-200">Portfolio Value Over Time</h2>
+      <span class="text-xs text-slate-500" id="p-trend-label">–</span>
+    </div>
+    <canvas id="portfolio-trend-chart" height="80"></canvas>
+    <div id="portfolio-trend-empty" class="text-center text-slate-500 text-sm py-4 hidden">
+      Upload multiple CSVs over time to track your portfolio trend
+    </div>
+  </div>
+
   <!-- Positions table -->
   <div class="card">
     <div class="flex items-center justify-between mb-3">
@@ -378,6 +390,71 @@ function showTab(name) {
 }
 
 // ── Portfolio ──────────────────────────────────────────────────────────────────
+let _portfolioTrendChart = null;
+
+async function loadPortfolioTrend() {
+  try {
+    const data = await api('/api/portfolio/history');
+    const canvas = $('portfolio-trend-chart');
+    const empty  = $('portfolio-trend-empty');
+    if (!data.length) {
+      canvas.classList.add('hidden');
+      empty.classList.remove('hidden');
+      $('p-trend-label').textContent = 'No history yet';
+      return;
+    }
+    canvas.classList.remove('hidden');
+    empty.classList.add('hidden');
+    $('p-trend-label').textContent = `${data.length} snapshot${data.length !== 1 ? 's' : ''}`;
+
+    const labels = data.map(d => {
+      const dt = new Date(d.date);
+      return dt.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'2-digit' });
+    });
+    const values = data.map(d => d.total_value);
+
+    if (_portfolioTrendChart) _portfolioTrendChart.destroy();
+    _portfolioTrendChart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Portfolio Value',
+          data: values,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.08)',
+          fill: true,
+          tension: 0.35,
+          pointRadius: data.length > 30 ? 0 : 4,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#3b82f6',
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ' $' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color:'#64748b', maxTicksLimit:8, maxRotation:0 }, grid: { color:'#1e293b' } },
+          y: {
+            ticks: {
+              color: '#64748b',
+              callback: v => '$' + (v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(0))
+            },
+            grid: { color:'#1e293b' }
+          }
+        }
+      }
+    });
+  } catch(e) { console.error('loadPortfolioTrend', e); }
+}
+
 async function uploadCSV(input) {
   const file = input.files[0];
   if (!file) return;
@@ -442,6 +519,7 @@ async function loadPortfolio() {
 
     // Render alerts
     renderAlerts(data.alerts);
+    loadPortfolioTrend();
     $('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch(e) {
     console.error('loadPortfolio', e);

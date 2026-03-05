@@ -1,38 +1,33 @@
 """
-Portfolio module — Fidelity CSV parsing, P&L calculation, risk alerts.
+Portfolio module — Fidelity CSV parsing, live price enrichment, P&L calculation, risk alerts.
 
-Fidelity CSV export format (from Positions page):
-- May have header metadata rows at the top
-- Actual column header row contains "Symbol" or "Account Number"
-- Data rows follow; may have trailing summary/footer rows
+CSV import: only trusts Symbol, Description, Quantity, Cost Basis, Avg Cost from the file.
+All price/value fields are calculated from live market data via yfinance.
 """
 import io
 import re
 import pandas as pd
+import yfinance as yf
 from typing import Optional
 
 
-FIDELITY_COLUMNS = {
-    "Account Name": "account_name",
-    "Account Number": "account_number",
-    "Symbol": "symbol",
-    "Description": "description",
-    "Quantity": "quantity",
-    "Last Price": "last_price",
-    "Last Price Change": "last_price_change",
-    "Current Value": "current_value",
-    "Today's Gain/Loss Dollar": "today_gain_loss_dollar",
-    "Today's Gain/Loss Percent": "today_gain_loss_pct",
-    "Total Gain/Loss Dollar": "gain_loss_dollar",
-    "Total Gain/Loss Percent": "gain_loss_pct",
-    "Percent Of Account": "percent_of_account",
-    "Cost Basis Total": "cost_basis",
-    "Average Cost Basis": "avg_cost",
-    "Type": "position_type",
-}
-
 RISK_THRESHOLD_PCT = 50.0   # alert when gain >= 50%
 REDUCE_SIZE_PCT = 25.0       # suggested size reduction
+
+# Fidelity money market fund symbols and patterns
+MONEY_MARKET_SYMBOLS = {"SPAXX", "FDRXX", "FZFXX", "SPRXX", "FMPXX", "FZDXX", "FTEXX"}
+
+def _is_money_market(pos: dict) -> bool:
+    sym = (pos.get("symbol") or "").upper().strip("*")
+    desc = (pos.get("description") or "").lower()
+    pos_type = (pos.get("position_type") or "").lower()
+    return (
+        sym in MONEY_MARKET_SYMBOLS
+        or sym.startswith("FCASH")
+        or "money market" in desc
+        or "money market" in pos_type
+        or "cash" in pos_type
+    )
 
 
 def _clean_numeric(val) -> Optional[float]:
@@ -40,7 +35,7 @@ def _clean_numeric(val) -> Optional[float]:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return None
     s = str(val).strip().replace("$", "").replace(",", "").replace("%", "").replace("+", "")
-    if s in ("", "--", "n/a", "N/A", "None"):
+    if s in ("", "--", "n/a", "N/A", "None", "nan"):
         return None
     try:
         return float(s)
@@ -58,17 +53,114 @@ def _find_header_row(lines: list[str]) -> int:
     return 0
 
 
+def enrich_with_live_prices(positions: list[dict]) -> list[dict]:
+    """
+    Fetch live prices for all positions and calculate:
+      current_value, gain_loss_dollar, gain_loss_pct,
+      today_gain_loss_dollar, today_gain_loss_pct, percent_of_account.
+
+    Money market positions are treated as $1/share (stable NAV).
+    """
+    # Symbols that need a live quote
+    tradeable = [
+        p["symbol"] for p in positions
+        if not _is_money_market(p) and (p.get("quantity") or 0) != 0
+    ]
+    unique_syms = list(dict.fromkeys(tradeable))  # preserve order, dedupe
+
+    prices: dict[str, float] = {}
+    prev_prices: dict[str, float] = {}
+
+    if unique_syms:
+        if len(unique_syms) == 1:
+            sym = unique_syms[0]
+            try:
+                hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
+                if not hist.empty:
+                    prices[sym] = float(hist["Close"].iloc[-1])
+                    prev_prices[sym] = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else prices[sym]
+            except Exception:
+                pass
+        else:
+            try:
+                raw = yf.download(
+                    unique_syms, period="2d", auto_adjust=True,
+                    progress=False, group_by="ticker",
+                )
+                for sym in unique_syms:
+                    try:
+                        col = raw[sym]["Close"] if sym in raw else None
+                        if col is not None and len(col) >= 1:
+                            prices[sym] = float(col.iloc[-1])
+                            prev_prices[sym] = float(col.iloc[-2]) if len(col) >= 2 else prices[sym]
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Fallback: fetch individually for any still-missing symbols
+        for sym in unique_syms:
+            if sym not in prices:
+                try:
+                    hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
+                    if not hist.empty:
+                        prices[sym] = float(hist["Close"].iloc[-1])
+                        prev_prices[sym] = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else prices[sym]
+                except Exception:
+                    pass
+
+    # Annotate positions
+    for pos in positions:
+        sym = pos["symbol"]
+        qty = pos.get("quantity") or 0
+        cost = pos.get("cost_basis") or 0
+
+        if _is_money_market(pos):
+            pos["last_price"] = 1.0
+            pos["current_value"] = round(qty, 2)
+            pos["gain_loss_dollar"] = round(qty - cost, 2) if cost else 0.0
+            pos["gain_loss_pct"] = 0.0
+            pos["today_gain_loss_dollar"] = 0.0
+            pos["today_gain_loss_pct"] = 0.0
+        elif sym in prices and qty:
+            price = prices[sym]
+            prev = prev_prices.get(sym, price)
+            pos["last_price"] = round(price, 4)
+            pos["current_value"] = round(price * qty, 2)
+            pos["gain_loss_dollar"] = round(pos["current_value"] - cost, 2) if cost else None
+            pos["gain_loss_pct"] = (
+                round((pos["current_value"] - cost) / cost * 100, 2) if cost else None
+            )
+            pos["today_gain_loss_dollar"] = round((price - prev) * qty, 2)
+            pos["today_gain_loss_pct"] = round((price - prev) / prev * 100, 2) if prev else 0.0
+        else:
+            # Price unavailable — leave values as None
+            pos.setdefault("last_price", None)
+            pos.setdefault("current_value", None)
+            pos.setdefault("gain_loss_dollar", None)
+            pos.setdefault("gain_loss_pct", None)
+            pos.setdefault("today_gain_loss_dollar", None)
+            pos.setdefault("today_gain_loss_pct", None)
+
+    # Calculate percent_of_account based on live values
+    total_val = sum(p.get("current_value") or 0 for p in positions)
+    for pos in positions:
+        cv = pos.get("current_value")
+        pos["percent_of_account"] = round(cv / total_val * 100, 2) if cv and total_val else None
+
+    return positions
+
+
 def parse_fidelity_csv(content: bytes | str) -> dict:
     """
-    Parse a Fidelity positions CSV export.
+    Parse a Fidelity positions CSV.
+    Only reads: Symbol, Description, Quantity, Cost Basis Total, Average Cost Basis.
+    All price/value fields are derived from live market data.
+
     Returns a dict with:
-      - positions: list of position dicts
-      - total_value: float
-      - total_cost: float
-      - total_gain_loss: float
-      - total_gain_loss_pct: float
-      - today_gain_loss: float
-      - today_gain_loss_pct: float
+      - positions: list of position dicts (price-enriched)
+      - total_value, total_cost, total_gain_loss, total_gain_loss_pct
+      - today_gain_loss, today_gain_loss_pct
     """
     if isinstance(content, bytes):
         text = content.decode("utf-8", errors="replace")
@@ -76,8 +168,6 @@ def parse_fidelity_csv(content: bytes | str) -> dict:
         text = content
 
     lines = text.splitlines()
-
-    # Find where the real header starts
     header_idx = _find_header_row(lines)
     csv_text = "\n".join(lines[header_idx:])
 
@@ -86,16 +176,12 @@ def parse_fidelity_csv(content: bytes | str) -> dict:
     except Exception as e:
         raise ValueError(f"Could not parse CSV: {e}")
 
-    # Normalize column names
     df.columns = [c.strip().replace("\u2019", "'") for c in df.columns]
 
-    # Drop rows that are clearly footers (no symbol or all-NaN)
     if "Symbol" in df.columns:
         df = df[df["Symbol"].notna()]
         df = df[~df["Symbol"].astype(str).str.startswith("Totals")]
         df = df[~df["Symbol"].astype(str).str.startswith("Account")]
-        # Skip rows with no real ticker (cash positions have symbols like "FCASH**")
-        # We keep them so the user sees full portfolio
 
     positions = []
     for _, row in df.iterrows():
@@ -104,67 +190,74 @@ def parse_fidelity_csv(content: bytes | str) -> dict:
             continue
 
         pos = {
-            "account_name": str(row.get("Account Name", "")).strip(),
+            "account_name":   str(row.get("Account Name", "")).strip(),
             "account_number": str(row.get("Account Number", "")).strip(),
-            "symbol": symbol,
-            "description": str(row.get("Description", "")).strip(),
-            "quantity": _clean_numeric(row.get("Quantity")),
-            "last_price": _clean_numeric(row.get("Last Price")),
-            "current_value": _clean_numeric(row.get("Current Value")),
-            "avg_cost": _clean_numeric(row.get("Average Cost Basis")),
-            "cost_basis": _clean_numeric(row.get("Cost Basis Total")),
-            "gain_loss_dollar": _clean_numeric(row.get("Total Gain/Loss Dollar")),
-            "gain_loss_pct": _clean_numeric(row.get("Total Gain/Loss Percent")),
-            "today_gain_loss_dollar": _clean_numeric(row.get("Today's Gain/Loss Dollar")),
-            "today_gain_loss_pct": _clean_numeric(row.get("Today's Gain/Loss Percent")),
-            "percent_of_account": _clean_numeric(row.get("Percent Of Account")),
-            "position_type": str(row.get("Type", "")).strip(),
+            "symbol":         symbol,
+            "description":    str(row.get("Description", "")).strip(),
+            "quantity":       _clean_numeric(row.get("Quantity")),
+            "avg_cost":       _clean_numeric(row.get("Average Cost Basis")),
+            "cost_basis":     _clean_numeric(row.get("Cost Basis Total")),
+            "position_type":  str(row.get("Type", "")).strip(),
+            # Price fields populated by enrichment
+            "last_price":             None,
+            "current_value":          None,
+            "gain_loss_dollar":       None,
+            "gain_loss_pct":          None,
+            "today_gain_loss_dollar": None,
+            "today_gain_loss_pct":    None,
+            "percent_of_account":     None,
         }
         positions.append(pos)
 
-    # Aggregate totals
-    total_value = sum(p["current_value"] or 0 for p in positions)
-    total_cost = sum(p["cost_basis"] or 0 for p in positions)
-    total_gain_loss = sum(p["gain_loss_dollar"] or 0 for p in positions)
-    today_gain_loss = sum(p["today_gain_loss_dollar"] or 0 for p in positions)
+    # Enrich all positions with live prices
+    positions = enrich_with_live_prices(positions)
+
+    # Aggregate totals from live data
+    total_value     = sum(p.get("current_value") or 0 for p in positions)
+    total_cost      = sum(p.get("cost_basis") or 0 for p in positions)
+    total_gain_loss = sum(p.get("gain_loss_dollar") or 0 for p in positions)
+    today_gain_loss = sum(p.get("today_gain_loss_dollar") or 0 for p in positions)
     total_gain_loss_pct = (total_gain_loss / total_cost * 100) if total_cost else 0
     today_gain_loss_pct = (today_gain_loss / (total_value - today_gain_loss) * 100) if total_value else 0
 
     return {
         "positions": positions,
-        "total_value": round(total_value, 2),
-        "total_cost": round(total_cost, 2),
-        "total_gain_loss": round(total_gain_loss, 2),
-        "total_gain_loss_pct": round(total_gain_loss_pct, 2),
-        "today_gain_loss": round(today_gain_loss, 2),
-        "today_gain_loss_pct": round(today_gain_loss_pct, 2),
+        "total_value":          round(total_value, 2),
+        "total_cost":           round(total_cost, 2),
+        "total_gain_loss":      round(total_gain_loss, 2),
+        "total_gain_loss_pct":  round(total_gain_loss_pct, 2),
+        "today_gain_loss":      round(today_gain_loss, 2),
+        "today_gain_loss_pct":  round(today_gain_loss_pct, 2),
     }
 
 
 def get_risk_alerts(positions: list[dict]) -> list[dict]:
     """
     Scan positions for risk conditions.
-    Returns a list of alert dicts.
+    Skips money market / cash positions.
 
-    Current rules:
+    Rules:
       - Gain >= 50%: recommend reducing position by 25%
     """
     alerts = []
     for pos in positions:
+        if _is_money_market(pos):
+            continue
+
         gain_pct = pos.get("gain_loss_pct")
         if gain_pct is None:
             continue
 
         if gain_pct >= RISK_THRESHOLD_PCT:
             current_value = pos.get("current_value") or 0
-            reduce_value = current_value * (REDUCE_SIZE_PCT / 100)
-            quantity = pos.get("quantity") or 0
+            reduce_value  = current_value * (REDUCE_SIZE_PCT / 100)
+            quantity      = pos.get("quantity") or 0
             reduce_shares = quantity * (REDUCE_SIZE_PCT / 100)
 
             alerts.append({
-                "type": "REDUCE_POSITION",
+                "type":     "REDUCE_POSITION",
                 "severity": "high" if gain_pct >= 100 else "medium",
-                "symbol": pos["symbol"],
+                "symbol":   pos["symbol"],
                 "description": pos.get("description", ""),
                 "gain_pct": round(gain_pct, 2),
                 "current_value": round(current_value, 2),
@@ -175,6 +268,5 @@ def get_risk_alerts(positions: list[dict]) -> list[dict]:
                 "suggested_action": f"SELL {reduce_shares:.1f} shares (${reduce_value:,.0f})",
             })
 
-    # Sort by gain descending
     alerts.sort(key=lambda a: a["gain_pct"], reverse=True)
     return alerts
