@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FinDash — Personal Financial Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; }
+  .tab-btn { transition: all 0.15s; }
+  .tab-btn.active { background: #1e40af; color: #fff; }
+  .tab-btn:not(.active):hover { background: #1e293b; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.25rem; }
+  .badge-buy    { background:#166534; color:#bbf7d0; }
+  .badge-sell   { background:#7f1d1d; color:#fecaca; }
+  .badge-hold   { background:#1e3a5f; color:#bae6fd; }
+  .badge-watch  { background:#713f12; color:#fef3c7; }
+  .badge-reduce { background:#4c1d95; color:#e9d5ff; }
+  .badge-avoid  { background:#450a0a; color:#fca5a5; }
+  .up   { color: #4ade80; }
+  .down { color: #f87171; }
+  .neutral { color: #94a3b8; }
+  .alert-high   { border-left: 4px solid #ef4444; background: #1c0a0a; }
+  .alert-medium { border-left: 4px solid #f59e0b; background: #1c1308; }
+  table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  th { background:#0f172a; color:#64748b; text-align:left; padding:0.5rem 0.75rem; font-weight:600; text-transform:uppercase; font-size:0.7rem; letter-spacing:0.05em; position:sticky; top:0; z-index:1; }
+  td { padding:0.5rem 0.75rem; border-bottom:1px solid #1e293b; }
+  tr:hover td { background:#1e293b55; }
+  .spinner { border:3px solid #334155; border-top-color:#3b82f6; border-radius:50%; width:24px; height:24px; animation:spin 0.7s linear infinite; display:inline-block; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .sector-bar { height:6px; border-radius:3px; }
+  input[type=file] { display:none; }
+  .file-label { cursor:pointer; }
+  ::-webkit-scrollbar { width:6px; height:6px; }
+  ::-webkit-scrollbar-track { background:#0f172a; }
+  ::-webkit-scrollbar-thumb { background:#334155; border-radius:3px; }
+  .tag { display:inline-block; padding:0.1rem 0.5rem; border-radius:9999px; font-size:0.7rem; font-weight:600; text-transform:uppercase; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-slate-700 px-6 py-3 flex items-center justify-between sticky top-0 z-50" style="background:#0f172a;">
+  <div class="flex items-center gap-3">
+    <span class="text-blue-400 text-xl font-bold tracking-tight">&#9660; FinDash</span>
+    <span class="text-slate-500 text-xs" id="last-updated">–</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <span class="text-xs text-slate-500">&#9888; For informational use only — not financial advice</span>
+    <button onclick="refreshAll()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition">&#8635; Refresh</button>
+  </div>
+</header>
+
+<!-- Nav tabs -->
+<nav class="border-b border-slate-700 px-6 flex gap-1 py-2" style="background:#0f172a;">
+  <button class="tab-btn active px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('portfolio')">Portfolio</button>
+  <button class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('market')">Market</button>
+  <button class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('research')">Research</button>
+  <button class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('social')">Social</button>
+  <button class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('opportunities')">Opportunities</button>
+  <button class="tab-btn px-4 py-1.5 rounded-lg text-sm font-medium" onclick="showTab('tracker')">Tracker</button>
+</nav>
+
+<!-- Main content -->
+<main class="p-6 max-w-screen-2xl mx-auto">
+
+<!-- ═══════════ PORTFOLIO TAB ═══════════ -->
+<div id="tab-portfolio" class="tab-content">
+  <!-- Upload bar -->
+  <div class="card mb-5 flex items-center gap-4">
+    <label class="file-label bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg transition" for="csv-upload">
+      &#8679; Upload Fidelity CSV
+    </label>
+    <input type="file" id="csv-upload" accept=".csv" onchange="uploadCSV(this)" />
+    <span class="text-slate-400 text-sm" id="upload-status">Export from Fidelity → Accounts → Positions → Download CSV</span>
+    <div class="ml-auto">
+      <a href="/docs" target="_blank" class="text-blue-400 text-xs hover:underline">API Docs</a>
+    </div>
+  </div>
+
+  <!-- Risk alerts -->
+  <div id="alerts-container" class="mb-5 space-y-2 hidden"></div>
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+    <div class="card">
+      <div class="text-slate-400 text-xs mb-1">Portfolio Value</div>
+      <div class="text-2xl font-bold" id="p-total-value">–</div>
+    </div>
+    <div class="card">
+      <div class="text-slate-400 text-xs mb-1">Total Gain/Loss</div>
+      <div class="text-2xl font-bold" id="p-total-gl">–</div>
+      <div class="text-xs" id="p-total-gl-pct">–</div>
+    </div>
+    <div class="card">
+      <div class="text-slate-400 text-xs mb-1">Today's Gain/Loss</div>
+      <div class="text-2xl font-bold" id="p-today-gl">–</div>
+      <div class="text-xs" id="p-today-gl-pct">–</div>
+    </div>
+    <div class="card">
+      <div class="text-slate-400 text-xs mb-1">Positions</div>
+      <div class="text-2xl font-bold" id="p-pos-count">–</div>
+      <div class="text-xs text-slate-400" id="p-snap-date">–</div>
+    </div>
+  </div>
+
+  <!-- Positions table -->
+  <div class="card">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-slate-200">Positions</h2>
+      <button onclick="researchAll()" class="text-xs text-blue-400 hover:underline">Research All</button>
+    </div>
+    <div class="overflow-auto max-h-[55vh]">
+      <table id="positions-table">
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Description</th><th>Qty</th>
+            <th>Price</th><th>Value</th><th>Avg Cost</th>
+            <th>Gain/Loss $</th><th>Gain/Loss %</th>
+            <th>Today $</th><th>Today %</th>
+            <th>% of Acct</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="positions-tbody">
+          <tr><td colspan="12" class="text-center text-slate-500 py-8">Upload a Fidelity CSV to see your positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ MARKET TAB ═══════════ -->
+<div id="tab-market" class="tab-content hidden">
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-5" id="indices-cards">
+    <div class="card text-center"><div class="spinner mx-auto"></div></div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+    <!-- Sectors -->
+    <div class="card">
+      <h2 class="font-semibold mb-3 text-slate-200">Sector Performance</h2>
+      <div id="sectors-list" class="space-y-2">
+        <div class="spinner mx-auto"></div>
+      </div>
+    </div>
+    <!-- Economic events -->
+    <div class="card">
+      <h2 class="font-semibold mb-3 text-slate-200">Upcoming Events</h2>
+      <div id="events-list" class="space-y-1 text-sm">
+        <div class="spinner mx-auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Movers -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+    <div class="card">
+      <h2 class="font-semibold mb-3 text-green-400">&#9650; Top Gainers</h2>
+      <table id="gainers-table">
+        <thead><tr><th>Symbol</th><th>Price</th><th>Change %</th></tr></thead>
+        <tbody id="gainers-tbody"><tr><td colspan="3" class="text-center text-slate-500">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="font-semibold mb-3 text-red-400">&#9660; Top Losers</h2>
+      <table id="losers-table">
+        <thead><tr><th>Symbol</th><th>Price</th><th>Change %</th></tr></thead>
+        <tbody id="losers-tbody"><tr><td colspan="3" class="text-center text-slate-500">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ RESEARCH TAB ═══════════ -->
+<div id="tab-research" class="tab-content hidden">
+  <!-- Search bar -->
+  <div class="card mb-5 flex gap-3 items-center">
+    <input id="research-input" type="text" placeholder="Enter ticker symbol (e.g. AAPL)"
+      class="bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-sm flex-1 outline-none focus:border-blue-500"
+      onkeydown="if(event.key==='Enter')runResearch()" />
+    <button onclick="runResearch()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm transition">Research</button>
+    <button onclick="researchAll()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm transition">All Positions</button>
+  </div>
+
+  <!-- Research result -->
+  <div id="research-result" class="space-y-4"></div>
+
+  <!-- All positions research -->
+  <div id="research-all-result" class="hidden">
+    <div class="card">
+      <h2 class="font-semibold mb-3">All Positions — Quick Analysis</h2>
+      <div class="overflow-auto">
+        <table>
+          <thead><tr><th>Symbol</th><th>Description</th><th>Held G/L%</th><th>Action</th><th>Rationale</th><th></th></tr></thead>
+          <tbody id="research-all-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ SOCIAL TAB ═══════════ -->
+<div id="tab-social" class="tab-content hidden">
+  <div class="flex gap-3 mb-5">
+    <input id="social-input" type="text" placeholder="Symbols (comma-separated) or leave blank for portfolio"
+      class="bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-sm flex-1 outline-none focus:border-blue-500" />
+    <button onclick="runSocial()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm transition">Scan</button>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+    <!-- Reddit mentions -->
+    <div class="card">
+      <h2 class="font-semibold mb-3">Reddit Mentions (Today)</h2>
+      <div id="reddit-results" class="text-slate-400 text-sm">Click Scan to fetch Reddit data</div>
+    </div>
+    <!-- Google Trends -->
+    <div class="card">
+      <h2 class="font-semibold mb-3">Google Trends (7-Day)</h2>
+      <div id="trends-results" class="text-slate-400 text-sm">Click Scan to fetch trends data</div>
+    </div>
+  </div>
+
+  <!-- Social Arbitrage -->
+  <div class="card">
+    <h2 class="font-semibold mb-1 text-yellow-400">&#9670; Social Arbitrage Plays</h2>
+    <p class="text-xs text-slate-500 mb-3">High social buzz + minimal price movement = potential early entry</p>
+    <div id="arbitrage-results" class="text-slate-400 text-sm">Click Scan to find opportunities</div>
+  </div>
+</div>
+
+<!-- ═══════════ OPPORTUNITIES TAB ═══════════ -->
+<div id="tab-opportunities" class="tab-content hidden">
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+    <!-- Polymarket -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold">Polymarket — Finance Markets</h2>
+        <button onclick="loadPolymarket()" class="text-xs text-blue-400 hover:underline">Refresh</button>
+      </div>
+      <div id="polymarket-results" class="text-slate-400 text-sm space-y-3">
+        <div class="spinner mx-auto"></div>
+      </div>
+    </div>
+
+    <!-- Options flow -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold">Unusual Options Flow</h2>
+        <button onclick="loadOptions()" class="text-xs text-blue-400 hover:underline">Refresh</button>
+      </div>
+      <div class="flex gap-2 mb-3">
+        <input id="options-input" type="text" placeholder="Symbols (blank = portfolio)"
+          class="bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-sm flex-1 outline-none focus:border-blue-500" />
+        <button onclick="loadOptions()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">Scan</button>
+      </div>
+      <div id="options-results" class="text-slate-400 text-sm space-y-2">
+        Click Scan to scan options chains
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ TRACKER TAB ═══════════ -->
+<div id="tab-tracker" class="tab-content hidden">
+  <!-- Stats bar -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5" id="tracker-stats">
+    <div class="card"><div class="text-slate-400 text-xs mb-1">Open</div><div class="text-2xl font-bold" id="t-open">–</div></div>
+    <div class="card"><div class="text-slate-400 text-xs mb-1">Closed</div><div class="text-2xl font-bold" id="t-closed">–</div></div>
+    <div class="card"><div class="text-slate-400 text-xs mb-1">Win Rate</div><div class="text-2xl font-bold" id="t-winrate">–</div></div>
+    <div class="card"><div class="text-slate-400 text-xs mb-1">Avg P&L</div><div class="text-2xl font-bold" id="t-avgpnl">–</div></div>
+  </div>
+
+  <!-- Add suggestion -->
+  <div class="card mb-5">
+    <h2 class="font-semibold mb-3">Add Suggestion</h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <input id="t-symbol" type="text" placeholder="Symbol" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm outline-none focus:border-blue-500 uppercase" />
+      <select id="t-action" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm outline-none focus:border-blue-500">
+        <option>BUY</option><option>SELL</option><option>HOLD</option><option>REDUCE</option><option>WATCH</option><option>AVOID</option>
+      </select>
+      <input id="t-entry" type="number" step="0.01" placeholder="Entry price" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm outline-none focus:border-blue-500" />
+      <input id="t-target" type="number" step="0.01" placeholder="Target (optional)" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm outline-none focus:border-blue-500" />
+    </div>
+    <div class="mt-3 flex gap-3">
+      <input id="t-rationale" type="text" placeholder="Rationale / notes" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm flex-1 outline-none focus:border-blue-500" />
+      <select id="t-source" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm outline-none focus:border-blue-500">
+        <option value="manual">Manual</option>
+        <option value="research">Research</option>
+        <option value="social">Social</option>
+        <option value="options">Options</option>
+        <option value="polymarket">Polymarket</option>
+        <option value="risk">Risk Mgmt</option>
+      </select>
+      <button onclick="addSuggestion()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm transition">Add</button>
+      <button onclick="refreshPrices()" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded text-sm transition">&#8635; Prices</button>
+    </div>
+  </div>
+
+  <!-- Open suggestions -->
+  <div class="card mb-5">
+    <h2 class="font-semibold mb-3 text-blue-300">Open Suggestions</h2>
+    <div class="overflow-auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Action</th><th>Source</th>
+            <th>Entry</th><th>Current</th><th>Target</th>
+            <th>P&L %</th><th>Opened</th><th>Rationale</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="open-suggestions-tbody">
+          <tr><td colspan="10" class="text-center text-slate-500 py-4">No open suggestions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Closed suggestions -->
+  <div class="card">
+    <h2 class="font-semibold mb-3 text-slate-400">Closed Suggestions</h2>
+    <div class="overflow-auto max-h-64">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Action</th><th>Source</th>
+            <th>Entry</th><th>Close</th><th>Final P&L %</th>
+            <th>Opened</th><th>Closed</th>
+          </tr>
+        </thead>
+        <tbody id="closed-suggestions-tbody">
+          <tr><td colspan="8" class="text-center text-slate-500 py-4">No closed suggestions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<!-- Disclaimer footer -->
+<footer class="text-center text-slate-600 text-xs py-4 border-t border-slate-800">
+  FinDash is for informational purposes only. Not financial advice. Always do your own due diligence.
+</footer>
+
+<script>
+const API = '';
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt = (n, dec=2) => n == null ? '–' : Number(n).toLocaleString('en-US', {minimumFractionDigits:dec, maximumFractionDigits:dec});
+const fmtUSD = n => n == null ? '–' : '$' + fmt(n);
+const pct = n => n == null ? '–' : (n > 0 ? '+' : '') + fmt(n) + '%';
+const pctClass = n => n == null ? 'neutral' : n > 0 ? 'up' : n < 0 ? 'down' : 'neutral';
+const actionBadge = a => {
+  const cls = { BUY:'badge-buy', SELL:'badge-sell', HOLD:'badge-hold', WATCH:'badge-watch', REDUCE:'badge-reduce', AVOID:'badge-avoid' };
+  return `<span class="tag ${cls[a]||'badge-hold'}">${a||'–'}</span>`;
+};
+const srcBadge = s => `<span class="tag" style="background:#1e293b;color:#94a3b8;">${s||'–'}</span>`;
+
+async function api(path, opts={}) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  $(`tab-${name}`).classList.remove('hidden');
+  event.target.classList.add('active');
+
+  // Lazy-load tab data
+  if (name === 'market' && !window._marketLoaded) { loadMarket(); window._marketLoaded = true; }
+  if (name === 'tracker') loadTracker();
+  if (name === 'opportunities' && !window._polyLoaded) { loadPolymarket(); window._polyLoaded = true; }
+}
+
+// ── Portfolio ──────────────────────────────────────────────────────────────────
+async function uploadCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  $('upload-status').textContent = 'Uploading…';
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const data = await api('/api/portfolio/upload', { method:'POST', body:form });
+    $('upload-status').textContent = `Uploaded: ${file.name} — ${data.position_count} positions`;
+    loadPortfolio();
+  } catch(e) {
+    $('upload-status').textContent = 'Error: ' + e.message;
+  }
+  input.value = '';
+}
+
+async function loadPortfolio() {
+  try {
+    const data = await api('/api/portfolio/latest');
+    if (!data.snapshot) return;
+
+    const s = data.snapshot;
+    $('p-total-value').textContent = fmtUSD(s.total_value);
+    const glEl = $('p-total-gl');
+    glEl.textContent = fmtUSD(s.total_gain_loss);
+    glEl.className = `text-2xl font-bold ${pctClass(s.total_gain_loss)}`;
+    $('p-total-gl-pct').textContent = pct(s.total_gain_loss_pct);
+    $('p-total-gl-pct').className = `text-xs ${pctClass(s.total_gain_loss_pct)}`;
+    const tglEl = $('p-today-gl');
+    tglEl.textContent = fmtUSD(s.today_gain_loss);
+    tglEl.className = `text-2xl font-bold ${pctClass(s.today_gain_loss)}`;
+    $('p-today-gl-pct').textContent = pct(s.today_gain_loss_pct);
+    $('p-today-gl-pct').className = `text-xs ${pctClass(s.today_gain_loss_pct)}`;
+    $('p-pos-count').textContent = data.positions.length;
+    $('p-snap-date').textContent = s.created_at ? new Date(s.created_at).toLocaleString() : '';
+
+    // Render positions
+    const tbody = $('positions-tbody');
+    if (!data.positions.length) {
+      tbody.innerHTML = '<tr><td colspan="12" class="text-center text-slate-500 py-6">No positions found</td></tr>';
+    } else {
+      tbody.innerHTML = data.positions.map(p => `
+        <tr>
+          <td><button class="text-blue-400 hover:underline font-semibold" onclick="quickResearch('${p.symbol}')">${p.symbol}</button></td>
+          <td class="text-slate-400 max-w-xs truncate" title="${p.description}">${p.description||'–'}</td>
+          <td>${fmt(p.quantity, 0)}</td>
+          <td>${fmtUSD(p.last_price)}</td>
+          <td class="font-medium">${fmtUSD(p.current_value)}</td>
+          <td>${fmtUSD(p.avg_cost)}</td>
+          <td class="${pctClass(p.gain_loss_dollar)}">${fmtUSD(p.gain_loss_dollar)}</td>
+          <td class="${pctClass(p.gain_loss_pct)} font-semibold">${pct(p.gain_loss_pct)}</td>
+          <td class="${pctClass(p.today_gain_loss_dollar)}">${fmtUSD(p.today_gain_loss_dollar)}</td>
+          <td class="${pctClass(p.today_gain_loss_pct)}">${pct(p.today_gain_loss_pct)}</td>
+          <td class="text-slate-400">${p.percent_of_account ? fmt(p.percent_of_account,1)+'%' : '–'}</td>
+          <td>
+            <button onclick="quickResearch('${p.symbol}')" class="text-xs text-blue-400 hover:underline mr-2">Research</button>
+            <button onclick="trackSymbol('${p.symbol}',${p.last_price})" class="text-xs text-slate-400 hover:text-slate-200 hover:underline">Track</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    // Render alerts
+    renderAlerts(data.alerts);
+    $('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    console.error('loadPortfolio', e);
+  }
+}
+
+function renderAlerts(alerts) {
+  const container = $('alerts-container');
+  if (!alerts || !alerts.length) { container.classList.add('hidden'); return; }
+  container.classList.remove('hidden');
+  container.innerHTML = alerts.map(a => `
+    <div class="card alert-${a.severity} p-3 flex items-start gap-3">
+      <span class="text-yellow-400 text-lg">&#9888;</span>
+      <div>
+        <div class="font-semibold text-sm">${a.message}</div>
+        <div class="text-xs text-slate-400 mt-0.5">Suggested: ${a.suggested_action}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Market ─────────────────────────────────────────────────────────────────────
+async function loadMarket() {
+  loadIndices();
+  loadSectors();
+  loadMovers();
+  loadEvents();
+}
+
+async function loadIndices() {
+  try {
+    const data = await api('/api/market/summary');
+    const container = $('indices-cards');
+    container.innerHTML = Object.entries(data).map(([name, d]) => `
+      <div class="card text-center">
+        <div class="text-slate-400 text-xs mb-1">${name}</div>
+        <div class="font-bold text-lg">${d.price != null ? (name==='VIX'?fmt(d.price):fmtUSD(d.price)) : '–'}</div>
+        <div class="text-sm font-medium ${pctClass(d.change_pct)}">${pct(d.change_pct)}</div>
+      </div>
+    `).join('');
+  } catch(e) { $('indices-cards').innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
+}
+
+async function loadSectors() {
+  try {
+    const data = await api('/api/market/sectors');
+    const maxAbs = Math.max(...data.map(s => Math.abs(s.change_pct||0)), 1);
+    $('sectors-list').innerHTML = data.map(s => {
+      const w = Math.round(Math.abs(s.change_pct||0) / maxAbs * 100);
+      const color = (s.change_pct||0) >= 0 ? '#166534' : '#7f1d1d';
+      return `
+        <div>
+          <div class="flex justify-between text-xs mb-0.5">
+            <span>${s.sector}</span>
+            <span class="${pctClass(s.change_pct)} font-semibold">${pct(s.change_pct)}</span>
+          </div>
+          <div class="bg-slate-700 rounded overflow-hidden">
+            <div class="sector-bar" style="width:${w}%;background:${color};"></div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) { $('sectors-list').innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
+}
+
+async function loadMovers() {
+  try {
+    const data = await api('/api/market/movers?top_n=10');
+    const renderRows = (items) => items.map(m => `
+      <tr>
+        <td class="font-semibold text-blue-400">${m.symbol}</td>
+        <td>${fmtUSD(m.price)}</td>
+        <td class="${pctClass(m.change_pct)} font-semibold">${pct(m.change_pct)}</td>
+      </tr>`).join('');
+    $('gainers-tbody').innerHTML = renderRows(data.gainers||[]);
+    $('losers-tbody').innerHTML = renderRows(data.losers||[]);
+  } catch(e) {
+    $('gainers-tbody').innerHTML = `<tr><td colspan="3" class="text-red-400">${e.message}</td></tr>`;
+  }
+}
+
+async function loadEvents() {
+  try {
+    const events = await api('/api/market/events?days_ahead=45');
+    if (!events.length) { $('events-list').innerHTML = '<div class="text-slate-500">No upcoming events in next 45 days</div>'; return; }
+    const typeColors = { FOMC:'text-blue-400', CPI:'text-purple-400', NFP:'text-green-400', Earnings:'text-yellow-400' };
+    $('events-list').innerHTML = events.map(e => {
+      const color = typeColors[e.type] || 'text-slate-300';
+      const daysUntil = Math.round((new Date(e.date) - new Date()) / 86400000);
+      return `
+        <div class="flex items-center justify-between py-1.5 border-b border-slate-700">
+          <div>
+            <span class="${color} font-semibold text-xs uppercase mr-2">${e.type}</span>
+            <span class="text-slate-200">${e.label}</span>
+            ${e.symbol ? `<span class="text-slate-400 ml-1">(${e.symbol})</span>` : ''}
+          </div>
+          <div class="text-right">
+            <div class="text-xs text-slate-300">${e.date}</div>
+            <div class="text-xs text-slate-500">${daysUntil}d away</div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) { $('events-list').innerHTML = `<div class="text-red-400 text-sm">${e.message}</div>`; }
+}
+
+// ── Research ───────────────────────────────────────────────────────────────────
+async function runResearch() {
+  const sym = $('research-input').value.trim().toUpperCase();
+  if (!sym) return;
+  $('research-result').innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+  $('research-all-result').classList.add('hidden');
+  try {
+    const data = await api(`/api/research/${sym}`);
+    renderResearch(data);
+  } catch(e) {
+    $('research-result').innerHTML = `<div class="card text-red-400">Error: ${e.message}</div>`;
+  }
+}
+
+function quickResearch(sym) {
+  $('research-input').value = sym;
+  showTab('research');
+  // Switch tab button
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-btn')[2].classList.add('active');
+  runResearch();
+}
+
+function renderResearch(data) {
+  const rec = data.recommendation || {};
+  const stats = data.key_stats || {};
+  const tech = data.technicals || {};
+  const action = rec.action || 'HOLD';
+
+  $('research-result').innerHTML = `
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <!-- Header card -->
+      <div class="card md:col-span-2">
+        <div class="flex items-start justify-between mb-3">
+          <div>
+            <h2 class="text-xl font-bold">${data.symbol}</h2>
+            <div class="text-slate-400 text-sm">${data.name || ''}</div>
+          </div>
+          ${actionBadge(action)}
+        </div>
+        <div class="grid grid-cols-3 gap-4 text-sm mb-4">
+          <div><div class="text-slate-500 text-xs">Price</div><div class="font-semibold">${fmtUSD(stats.current_price)}</div></div>
+          <div><div class="text-slate-500 text-xs">Market Cap</div><div class="font-semibold">${stats.market_cap ? '$'+fmt(stats.market_cap/1e9,1)+'B' : '–'}</div></div>
+          <div><div class="text-slate-500 text-xs">P/E Ratio</div><div class="font-semibold">${fmt(stats.pe_ratio)}</div></div>
+          <div><div class="text-slate-500 text-xs">Beta</div><div class="font-semibold">${fmt(stats.beta)}</div></div>
+          <div><div class="text-slate-500 text-xs">Div Yield</div><div class="font-semibold">${stats.dividend_yield ? stats.dividend_yield+'%' : '–'}</div></div>
+          <div><div class="text-slate-500 text-xs">Short Ratio</div><div class="font-semibold">${fmt(stats.short_ratio)}</div></div>
+          <div><div class="text-slate-500 text-xs">52W High</div><div class="font-semibold">${fmtUSD(stats['52w_high'])}</div></div>
+          <div><div class="text-slate-500 text-xs">52W Low</div><div class="font-semibold">${fmtUSD(stats['52w_low'])}</div></div>
+          <div><div class="text-slate-500 text-xs">Analyst Target</div><div class="font-semibold">${fmtUSD(stats.analyst_target)}</div></div>
+        </div>
+        <div class="text-xs text-slate-400"><span class="font-semibold text-slate-300">Analyst Rating: </span>${stats.analyst_rating || '–'}</div>
+        <div class="text-xs text-slate-400 mt-0.5"><span class="font-semibold text-slate-300">Sector: </span>${stats.sector || '–'} | ${stats.industry || '–'}</div>
+      </div>
+
+      <!-- Technicals -->
+      <div class="card">
+        <h3 class="font-semibold mb-3 text-slate-200">Technicals</h3>
+        <div class="space-y-2 text-sm">
+          <div class="flex justify-between"><span class="text-slate-400">RSI (14)</span><span class="${tech.rsi < 30 ? 'up' : tech.rsi > 70 ? 'down' : 'neutral'} font-semibold">${tech.rsi ?? '–'}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">MACD</span><span class="${tech.macd?.bullish ? 'up' : 'down'}">${tech.macd ? (tech.macd.bullish ? '▲ Bullish' : '▼ Bearish') : '–'}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">MA 20</span><span class="${tech.above_ma20 ? 'up' : 'down'}">${fmtUSD(tech.ma20)}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">MA 50</span><span class="${tech.above_ma50 ? 'up' : 'down'}">${fmtUSD(tech.ma50)}</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">MA 200</span><span class="${tech.above_ma200 ? 'up' : 'down'}">${fmtUSD(tech.ma200)}</span></div>
+        </div>
+        <div class="mt-4">
+          <div class="text-xs text-slate-500 mb-1">Signal strength</div>
+          <div class="flex gap-1">
+            ${Array(rec.bullish_signals||0).fill('<div class="h-2 w-4 rounded bg-green-500"></div>').join('')}
+            ${Array(rec.bearish_signals||0).fill('<div class="h-2 w-4 rounded bg-red-500"></div>').join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recommendation rationale -->
+    <div class="card">
+      <h3 class="font-semibold mb-2 text-slate-200">Recommendation Rationale</h3>
+      <ul class="space-y-1">
+        ${(rec.rationale||[]).map(r => `<li class="text-sm text-slate-300 flex gap-2"><span class="text-slate-500">•</span>${r}</li>`).join('')}
+      </ul>
+      <div class="mt-3 flex gap-2">
+        <button onclick="saveResearchSuggestion('${data.symbol}')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition">+ Track This Suggestion</button>
+      </div>
+    </div>
+
+    <!-- News -->
+    <div class="card">
+      <h3 class="font-semibold mb-3 text-slate-200">Latest News</h3>
+      <div class="space-y-2">
+        ${(data.news||[]).map(n => `
+          <div class="border-b border-slate-700 pb-2">
+            <a href="${n.link}" target="_blank" class="text-sm text-blue-400 hover:underline">${n.title}</a>
+            <div class="text-xs text-slate-500 mt-0.5">${n.publisher} · ${n.published_at}</div>
+          </div>`).join('') || '<div class="text-slate-500 text-sm">No recent news</div>'}
+      </div>
+    </div>
+  `;
+}
+
+async function saveResearchSuggestion(sym) {
+  try {
+    const data = await api(`/api/tracker/suggestions/from-research/${sym}`, { method:'POST' });
+    alert(`Suggestion added: ${data.action} ${sym} — view in Tracker tab`);
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function researchAll() {
+  $('research-result').innerHTML = '';
+  $('research-all-result').classList.remove('hidden');
+  $('research-all-tbody').innerHTML = '<tr><td colspan="6" class="text-center py-4"><div class="spinner mx-auto"></div></td></tr>';
+  try {
+    const data = await api('/api/research/portfolio/all');
+    if (!data.length) {
+      $('research-all-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-slate-500">Upload a portfolio CSV first</td></tr>';
+      return;
+    }
+    $('research-all-tbody').innerHTML = data.map(r => `
+      <tr>
+        <td class="font-semibold text-blue-400">${r.symbol||'–'}</td>
+        <td class="text-slate-400 text-xs max-w-xs truncate">${r.description||'–'}</td>
+        <td class="${pctClass(r.gain_loss_pct)}">${pct(r.gain_loss_pct)}</td>
+        <td>${actionBadge(r.action)}</td>
+        <td class="text-xs text-slate-400 max-w-sm">${(r.rationale||[]).join(' · ')}</td>
+        <td>
+          <button onclick="quickResearch('${r.symbol}')" class="text-xs text-blue-400 hover:underline">Details</button>
+        </td>
+      </tr>`).join('');
+  } catch(e) {
+    $('research-all-tbody').innerHTML = `<tr><td colspan="6" class="text-red-400">${e.message}</td></tr>`;
+  }
+}
+
+// ── Social ─────────────────────────────────────────────────────────────────────
+async function runSocial() {
+  const raw = $('social-input').value.trim();
+  const symsParam = raw ? `?symbols=${encodeURIComponent(raw)}` : '';
+
+  $('reddit-results').innerHTML = '<div class="spinner mx-auto"></div>';
+  $('trends-results').innerHTML = '<div class="spinner mx-auto"></div>';
+  $('arbitrage-results').innerHTML = '<div class="spinner mx-auto"></div>';
+
+  // Fire all three in parallel
+  const [redditP, trendsP, arbP] = [
+    api(`/api/social/reddit${symsParam}`).catch(e => ({error: e.message})),
+    api(`/api/social/trends${symsParam}`).catch(e => ({error: e.message})),
+    api(`/api/social/arbitrage${symsParam}`).catch(e => ({error: e.message})),
+  ];
+  const [reddit, trends, arb] = await Promise.all([redditP, trendsP, arbP]);
+
+  // Reddit
+  if (reddit.error) {
+    $('reddit-results').innerHTML = `<div class="text-red-400">${reddit.error}</div>`;
+  } else {
+    const mentions = reddit.mentions || {};
+    const topPosts = reddit.top_posts || {};
+    const sorted = Object.entries(mentions).filter(([,c]) => c > 0).sort(([,a],[,b]) => b-a);
+    if (!sorted.length) {
+      $('reddit-results').innerHTML = '<div class="text-slate-500">No mentions found in scanned posts</div>';
+    } else {
+      $('reddit-results').innerHTML = `
+        <div class="text-xs text-slate-500 mb-2">Scanned ${reddit.total_posts_scanned||0} posts via ${reddit.method}</div>
+        ${sorted.map(([sym, count]) => {
+          const posts = (topPosts[sym]||[]).slice(0,2);
+          return `
+            <div class="mb-3">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="font-semibold text-blue-400">${sym}</span>
+                <span class="text-xs text-slate-400">${count} mention${count>1?'s':''}</span>
+              </div>
+              ${posts.map(p => `
+                <div class="text-xs text-slate-400 ml-3 mb-0.5">
+                  <a href="${p.url}" target="_blank" class="hover:text-blue-400">${p.title?.slice(0,80)}…</a>
+                  <span class="text-slate-600"> · r/${p.subreddit} · ▲${p.score}</span>
+                </div>`).join('')}
+            </div>`;
+        }).join('')}`;
+    }
+  }
+
+  // Trends
+  if (trends.error) {
+    $('trends-results').innerHTML = `<div class="text-red-400">${trends.error}</div>`;
+  } else {
+    const t = trends.trends || {};
+    const items = Object.entries(t);
+    if (!items.length) {
+      $('trends-results').innerHTML = '<div class="text-slate-500">No trend data available</div>';
+    } else {
+      $('trends-results').innerHTML = items.map(([sym, d]) => `
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-semibold text-sm">${sym}</span>
+          <div class="text-right">
+            <span class="text-xs ${pctClass(d.trend_pct)}">${d.trend_pct > 0 ? '+' : ''}${d.trend_pct}% 7d</span>
+            <div class="text-xs text-slate-500">interest: ${d.current_interest}/100</div>
+          </div>
+        </div>`).join('');
+    }
+  }
+
+  // Arbitrage
+  if (arb.error) {
+    $('arbitrage-results').innerHTML = `<div class="text-red-400">${arb.error}</div>`;
+  } else if (!arb.length) {
+    $('arbitrage-results').innerHTML = '<div class="text-slate-500">No significant social arbitrage signals found</div>';
+  } else {
+    $('arbitrage-results').innerHTML = arb.map(p => `
+      <div class="card mb-2 flex items-start justify-between">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-bold text-yellow-400">${p.symbol}</span>
+            <span class="tag" style="background:${p.signal==='Strong'?'#713f12':p.signal==='Moderate'?'#1e3a5f':'#1e293b'};color:#fff;">${p.signal}</span>
+            <span class="text-xs text-slate-400">Score: ${p.arb_score}</span>
+          </div>
+          <div class="text-xs text-slate-400">${p.note}</div>
+        </div>
+        <div class="text-right text-xs">
+          <div class="text-slate-400">Today: <span class="${pctClass(p.price_change_pct_today)}">${pct(p.price_change_pct_today)}</span></div>
+          <div class="text-slate-500">Reddit: ${p.reddit_mentions}</div>
+        </div>
+      </div>`).join('');
+  }
+}
+
+// ── Opportunities ──────────────────────────────────────────────────────────────
+async function loadPolymarket() {
+  $('polymarket-results').innerHTML = '<div class="flex justify-center py-4"><div class="spinner"></div></div>';
+  try {
+    const markets = await api('/api/opportunities/polymarket');
+    if (!markets.length || markets[0]?.error) {
+      $('polymarket-results').innerHTML = `<div class="text-slate-500">${markets[0]?.error || 'No finance markets found'}</div>`;
+      return;
+    }
+    $('polymarket-results').innerHTML = markets.map(m => {
+      const outcomes = (m.outcomes||[]).map(o =>
+        `<span class="text-xs">${o.name}: <strong>${o.probability}%</strong></span>`
+      ).join(' · ');
+      return `
+        <div class="border-b border-slate-700 pb-3">
+          <a href="${m.url}" target="_blank" class="text-sm text-blue-400 hover:underline font-medium">${m.question}</a>
+          <div class="text-xs text-slate-400 mt-1">${outcomes}</div>
+          <div class="text-xs text-slate-500 mt-0.5">
+            Volume: $${m.volume_usd?.toLocaleString()||'–'}
+            ${m.end_date ? ' · Ends: '+m.end_date : ''}
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {
+    $('polymarket-results').innerHTML = `<div class="text-red-400">${e.message}</div>`;
+  }
+}
+
+async function loadOptions() {
+  const syms = $('options-input').value.trim();
+  const param = syms ? `?symbols=${encodeURIComponent(syms)}` : '';
+  $('options-results').innerHTML = '<div class="flex justify-center py-4"><div class="spinner"></div></div>';
+  try {
+    const data = await api(`/api/opportunities/options${param}`);
+    if (!data.length) {
+      $('options-results').innerHTML = '<div class="text-slate-500">No unusual options flow found (or no portfolio loaded)</div>';
+      return;
+    }
+    $('options-results').innerHTML = data.map(o => `
+      <div class="border-b border-slate-700 pb-2">
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-sm">${o.symbol}</span>
+          <span class="tag ${o.type==='CALL'?'badge-buy':'badge-sell'}">${o.type}</span>
+          <span class="text-xs text-slate-400">$${o.strike} exp ${o.expiration} (${o.dte}d)</span>
+        </div>
+        <div class="text-xs text-slate-400 mt-0.5">
+          Vol: <strong class="text-slate-200">${o.volume?.toLocaleString()}</strong> vs OI: ${o.open_interest?.toLocaleString()}
+          (<strong class="${o.vol_oi_ratio > 5 ? 'text-yellow-400' : 'text-slate-300'}">${o.vol_oi_ratio}x</strong>)
+          · Premium: $${o.last_price} · IV: ${o.implied_vol ?? '–'}%
+          ${o.pct_from_current != null ? ` · ${o.pct_from_current > 0 ? '+' : ''}${o.pct_from_current}% from price` : ''}
+        </div>
+        <div class="text-xs text-slate-500">Total premium: ~$${(o.premium_total||0).toLocaleString()}</div>
+      </div>`).join('');
+  } catch(e) {
+    $('options-results').innerHTML = `<div class="text-red-400">${e.message}</div>`;
+  }
+}
+
+// ── Tracker ────────────────────────────────────────────────────────────────────
+async function loadTracker() {
+  try {
+    const data = await api('/api/tracker/suggestions');
+    const stats = data.stats || {};
+    $('t-open').textContent = stats.open_count ?? '–';
+    $('t-closed').textContent = stats.closed_count ?? '–';
+    $('t-winrate').textContent = stats.win_rate != null ? stats.win_rate + '%' : '–';
+    $('t-avgpnl').className = `text-2xl font-bold ${pctClass(stats.avg_pnl_pct)}`;
+    $('t-avgpnl').textContent = pct(stats.avg_pnl_pct);
+
+    // Open
+    const openBody = $('open-suggestions-tbody');
+    openBody.innerHTML = (data.open||[]).length === 0
+      ? '<tr><td colspan="10" class="text-center text-slate-500 py-4">No open suggestions</td></tr>'
+      : (data.open||[]).map(s => `
+          <tr>
+            <td class="font-semibold text-blue-400">${s.symbol}</td>
+            <td>${actionBadge(s.action)}</td>
+            <td>${srcBadge(s.source)}</td>
+            <td>${fmtUSD(s.entry_price)}</td>
+            <td>${fmtUSD(s.current_price)}</td>
+            <td class="text-slate-400">${fmtUSD(s.target_price)}</td>
+            <td class="${pctClass(s.current_pnl_pct)} font-semibold">${pct(s.current_pnl_pct)}</td>
+            <td class="text-xs text-slate-400">${s.created_at ? new Date(s.created_at).toLocaleDateString() : '–'}</td>
+            <td class="text-xs text-slate-400 max-w-xs truncate" title="${s.rationale||''}">${(s.rationale||'').slice(0,60)}${(s.rationale||'').length>60?'…':''}</td>
+            <td>
+              <button onclick="closeSuggestion(${s.id})" class="text-xs text-green-400 hover:underline mr-2">Close</button>
+              <button onclick="deleteSuggestion(${s.id})" class="text-xs text-red-400 hover:underline">Del</button>
+            </td>
+          </tr>`).join('');
+
+    // Closed
+    const closedBody = $('closed-suggestions-tbody');
+    closedBody.innerHTML = (data.closed||[]).length === 0
+      ? '<tr><td colspan="8" class="text-center text-slate-500 py-4">No closed suggestions</td></tr>'
+      : (data.closed||[]).map(s => `
+          <tr>
+            <td class="font-semibold">${s.symbol}</td>
+            <td>${actionBadge(s.action)}</td>
+            <td>${srcBadge(s.source)}</td>
+            <td>${fmtUSD(s.entry_price)}</td>
+            <td>${fmtUSD(s.close_price)}</td>
+            <td class="${pctClass(s.final_pnl_pct)} font-semibold">${pct(s.final_pnl_pct)}</td>
+            <td class="text-xs text-slate-400">${s.created_at ? new Date(s.created_at).toLocaleDateString() : '–'}</td>
+            <td class="text-xs text-slate-400">${s.closed_at ? new Date(s.closed_at).toLocaleDateString() : '–'}</td>
+          </tr>`).join('');
+  } catch(e) { console.error('loadTracker', e); }
+}
+
+async function addSuggestion() {
+  const sym = $('t-symbol').value.trim().toUpperCase();
+  const action = $('t-action').value;
+  const entry = parseFloat($('t-entry').value);
+  const rationale = $('t-rationale').value.trim();
+  const source = $('t-source').value;
+  const target = parseFloat($('t-target').value) || null;
+
+  if (!sym || isNaN(entry)) { alert('Symbol and entry price are required'); return; }
+
+  try {
+    await api('/api/tracker/suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol:sym, action, entry_price:entry, rationale:rationale||action+' '+sym, source, target_price:target }),
+    });
+    $('t-symbol').value = ''; $('t-entry').value = ''; $('t-rationale').value = ''; $('t-target').value = '';
+    loadTracker();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function closeSuggestion(id) {
+  const price = prompt('Close price (leave blank for current market price):');
+  const body = { close_price: price ? parseFloat(price) : null };
+  try {
+    const res = await api(`/api/tracker/suggestions/${id}/close`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+    });
+    alert(`Closed at ${fmtUSD(res.close_price)} — Final P&L: ${pct(res.final_pnl_pct)}`);
+    loadTracker();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteSuggestion(id) {
+  if (!confirm('Delete this suggestion permanently?')) return;
+  try { await api(`/api/tracker/suggestions/${id}`, { method:'DELETE' }); loadTracker(); }
+  catch(e) { alert('Error: ' + e.message); }
+}
+
+async function refreshPrices() {
+  try {
+    const res = await api('/api/tracker/refresh', { method:'POST' });
+    alert(`Refreshed ${res.updated} suggestion${res.updated!==1?'s':''}${res.errors?.length ? '. Errors: '+res.errors.join(', ') : ''}`);
+    loadTracker();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+function trackSymbol(sym, price) {
+  // Switch to tracker tab and pre-fill
+  showTab('tracker');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-btn')[5].classList.add('active');
+  $('t-symbol').value = sym;
+  $('t-entry').value = price || '';
+}
+
+// ── Global refresh ─────────────────────────────────────────────────────────────
+async function refreshAll() {
+  loadPortfolio();
+  window._marketLoaded = false;
+  if (!$('tab-market').classList.contains('hidden')) { loadMarket(); window._marketLoaded = true; }
+  if (!$('tab-tracker').classList.contains('hidden')) loadTracker();
+  $('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+loadPortfolio();
+</script>
+</body>
+</html>
