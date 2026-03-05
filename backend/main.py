@@ -275,19 +275,8 @@ def research_symbol(symbol: str, db: Session = Depends(get_db)):
 @app.get("/api/research/{symbol}/history")
 def get_price_history(symbol: str, period: str = "1y"):
     """OHLCV price history for charting (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y)."""
-    import yfinance as yf
-    ticker = yf.Ticker(symbol.upper())
-    hist = ticker.history(period=period, auto_adjust=True)
-    if hist.empty:
-        return {"dates": [], "closes": [], "opens": [], "highs": [], "lows": [], "volumes": []}
-    return {
-        "dates": hist.index.strftime("%Y-%m-%d").tolist(),
-        "closes": [round(float(c), 2) for c in hist["Close"]],
-        "opens":  [round(float(c), 2) for c in hist["Open"]],
-        "highs":  [round(float(c), 2) for c in hist["High"]],
-        "lows":   [round(float(c), 2) for c in hist["Low"]],
-        "volumes": [int(v) for v in hist["Volume"]],
-    }
+    from backend.modules._prices import get_history
+    return get_history(symbol.upper(), period=period)
 
 
 @app.get("/api/portfolio/history")

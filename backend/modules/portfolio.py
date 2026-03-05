@@ -5,10 +5,9 @@ CSV import: only trusts Symbol, Description, Quantity, Cost Basis, Avg Cost from
 All price/value fields are calculated from live market data via yfinance.
 """
 import io
-import re
 import pandas as pd
-import yfinance as yf
 from typing import Optional
+from backend.modules._prices import get_quotes
 
 
 RISK_THRESHOLD_PCT = 50.0   # alert when gain >= 50%
@@ -55,59 +54,18 @@ def _find_header_row(lines: list[str]) -> int:
 
 def enrich_with_live_prices(positions: list[dict]) -> list[dict]:
     """
-    Fetch live prices for all positions and calculate:
-      current_value, gain_loss_dollar, gain_loss_pct,
-      today_gain_loss_dollar, today_gain_loss_pct, percent_of_account.
+    Fetch live prices for all positions via the multi-source price fetcher and
+    calculate: current_value, gain_loss_dollar, gain_loss_pct,
+    today_gain_loss_dollar, today_gain_loss_pct, percent_of_account.
 
     Money market positions are treated as $1/share (stable NAV).
     """
-    # Symbols that need a live quote
-    tradeable = [
+    tradeable = list(dict.fromkeys(
         p["symbol"] for p in positions
         if not _is_money_market(p) and (p.get("quantity") or 0) != 0
-    ]
-    unique_syms = list(dict.fromkeys(tradeable))  # preserve order, dedupe
+    ))
 
-    prices: dict[str, float] = {}
-    prev_prices: dict[str, float] = {}
-
-    if unique_syms:
-        if len(unique_syms) == 1:
-            sym = unique_syms[0]
-            try:
-                hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
-                if not hist.empty:
-                    prices[sym] = float(hist["Close"].iloc[-1])
-                    prev_prices[sym] = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else prices[sym]
-            except Exception:
-                pass
-        else:
-            try:
-                raw = yf.download(
-                    unique_syms, period="2d", auto_adjust=True,
-                    progress=False, group_by="ticker",
-                )
-                for sym in unique_syms:
-                    try:
-                        col = raw[sym]["Close"] if sym in raw else None
-                        if col is not None and len(col) >= 1:
-                            prices[sym] = float(col.iloc[-1])
-                            prev_prices[sym] = float(col.iloc[-2]) if len(col) >= 2 else prices[sym]
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        # Fallback: fetch individually for any still-missing symbols
-        for sym in unique_syms:
-            if sym not in prices:
-                try:
-                    hist = yf.Ticker(sym).history(period="2d", auto_adjust=True)
-                    if not hist.empty:
-                        prices[sym] = float(hist["Close"].iloc[-1])
-                        prev_prices[sym] = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else prices[sym]
-                except Exception:
-                    pass
+    quotes = get_quotes(tradeable) if tradeable else {}
 
     # Annotate positions
     for pos in positions:
@@ -122,9 +80,10 @@ def enrich_with_live_prices(positions: list[dict]) -> list[dict]:
             pos["gain_loss_pct"] = 0.0
             pos["today_gain_loss_dollar"] = 0.0
             pos["today_gain_loss_pct"] = 0.0
-        elif sym in prices and qty:
-            price = prices[sym]
-            prev = prev_prices.get(sym, price)
+        elif sym in quotes and qty:
+            q     = quotes[sym]
+            price = q["price"]
+            prev  = q["prev_close"]
             pos["last_price"] = round(price, 4)
             pos["current_value"] = round(price * qty, 2)
             pos["gain_loss_dollar"] = round(pos["current_value"] - cost, 2) if cost else None
